@@ -1,0 +1,749 @@
+﻿using Playnite.SDK;
+using Playnite.SDK.Events;
+using Playnite.SDK.Plugins;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Threading;
+
+namespace CustomFadeAnim
+{
+    public class CustomFadeAnim : GenericPlugin
+    {
+        private CustomFadeAnimSettingsViewModel settings;
+        private static readonly ILogger logger = LogManager.GetLogger();
+        private FrameworkElement lastFadeImage;
+
+        // Registr animací (název -> továrna storyboardu)
+        private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> inAnimations;
+        private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> outAnimations;
+
+
+        public override Guid Id { get; } = Guid.Parse("155b27bc-6c8c-47dc-ae41-e74568b2fe9f");
+
+        public CustomFadeAnim(IPlayniteAPI api) : base(api)
+        {
+            settings = new CustomFadeAnimSettingsViewModel(this);
+            Properties = new GenericPluginProperties { HasSettings = true };
+            settings.Settings.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == nameof(settings.Settings.SourceUpdateDelay))
+                {
+                    TryApplySourceUpdateDelayToLast();
+                }
+            };
+        }
+
+        private void TryApplySourceUpdateDelayToLast()
+        {
+            if (lastFadeImage != null)
+            {
+                ApplySourceUpdateDelay(lastFadeImage, settings.Settings.SourceUpdateDelay);
+            }
+        }
+
+        public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
+        {
+            InitAnimations();
+            settings.Settings.AvailableAnimations = inAnimations.Keys.ToList();
+            settings.EnsureDefaults(settings.Settings.AvailableAnimations);
+
+            Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                TryHookWithRetries();
+                TryHookDesktopMode();
+            }, DispatcherPriority.Background);
+        }
+
+        // ---------------------- Inicializace animací ----------------------
+
+        public static class AnimationNames
+        {
+            public const string Default = "Default";
+            public const string CustomFade = "Custom Fade";
+            public const string BlurFade = "Blur Fade";
+            public const string FadeZoom = "Fade + Zoom";
+            public const string PS5Slide = "PS5 Slide";
+            public const string CustomSlide = "Custom Slide";
+            public const string ZoomRotate = "Zoom + Rotate";
+            public const string PageCurl = "Wave Curl";
+        }
+
+
+        private void InitAnimations()
+        {
+            inAnimations = new Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>>
+            {
+                { AnimationNames.Default,       (img, border, holder, p) => SbDefaultIn(img, border, p)  },
+                { AnimationNames.CustomFade,    (img, border, holder, p) => SbFadeIn(img, border, p) },
+                { AnimationNames.FadeZoom,      (img, border, holder, p) => SbFadeZoomIn(img, border, p) },
+                { AnimationNames.PS5Slide,      (img, border, holder, p) => SbSlideIn(img, border, p) },
+                { AnimationNames.CustomSlide,   (img, border, holder, p) => SbCustomSlideIn(img, border, p) },
+                { AnimationNames.ZoomRotate,    (img, border, holder, p) => SbZoomRotateIn(img, border, p) },
+                { AnimationNames.PageCurl,      (img, border, holder, p) => SbPageCurlIn(img, border, p) },
+                { AnimationNames.BlurFade,      (img, border, holder, p) => SbBlurFadeIn(img, border, p) },
+            };
+
+            outAnimations = new Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>>
+            {
+                { AnimationNames.Default,       (img, border, holder, p) => SbDefaultOut(img, p)  },
+                { AnimationNames.CustomFade,    (img, border, holder, p) => SbFadeOut(img, p) },
+                { AnimationNames.FadeZoom,      (img, border, holder, p) => SbFadeZoomOut(img, p) },
+                { AnimationNames.PS5Slide,      (img, border, holder, p) => SbSlideOut(img, p) },
+                { AnimationNames.CustomSlide,   (img, border, holder, p) => SbCustomSlideOut(img, p) },
+                { AnimationNames.ZoomRotate,    (img, border, holder, p) => SbZoomRotateOut(img, p) },
+                { AnimationNames.PageCurl,      (img, border, holder, p) => SbPageCurlOut(img, p) },
+                { AnimationNames.BlurFade,      (img, border, holder, p) => SbBlurFadeOut(img, p) },
+            };
+        }
+
+        // ---------------------- Hook do Fullscreen UI ----------------------
+
+        private void TryHookWithRetries()
+        {
+            const int maxAttempts = 10;
+            int attempt = 0;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+
+            timer.Tick += (s, e) =>
+            {
+                attempt++;
+                string reason;
+                if (TryHookOnce(out reason))
+                {
+                    timer.Stop();
+                }
+                else if (attempt >= maxAttempts)
+                {
+                    timer.Stop();
+                }
+            };
+
+            timer.Start();
+        }
+
+        private bool TryHookOnce(out string failReason)
+        {
+            failReason = null;
+
+            var win = Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsVisible);
+            if (win == null)
+            {
+                failReason = "No visible window.";
+                return false;
+            }
+
+            var fadeImage = FindChildByName(win, "PART_ImageBackground") as FrameworkElement;
+            if (fadeImage == null)
+            {
+                // Fallback: libovolný FadeImage ve stromu.
+                var anyFade = FindFirstOfTypeName(win, "Playnite.Controls.FadeImage");
+                if (anyFade != null)
+                {
+                    fadeImage = anyFade as FrameworkElement;
+                }
+            }
+
+            if (fadeImage == null)
+            {
+                failReason = "FadeImage not found.";
+                return false;
+            }
+
+            if (!fadeImage.IsLoaded)
+            {
+                RoutedEventHandler onLoaded = null;
+                onLoaded = (s, e) =>
+                {
+                    fadeImage.Loaded -= onLoaded;
+                    ApplyCustomAnimations(fadeImage);
+                };
+                fadeImage.Loaded += onLoaded;
+            }
+            else
+            {
+                ApplyCustomAnimations(fadeImage);
+            }
+
+            return true;
+        }
+
+        // ---------------------- Hook do Desktop UI ----------------------
+        private void TryHookDesktopMode()
+        {
+            var mainWindow = Application.Current?.MainWindow;
+            if (mainWindow == null) return;
+
+            var detailsView = FindVisualChildByTypeName(mainWindow, "Playnite.DesktopApp.Controls.DetailsViewGameOverview")
+                              as FrameworkElement;
+            if (detailsView == null)
+            {
+                detailsView = FindVisualChildByTypeName(mainWindow, "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview")
+                              as FrameworkElement;
+            }
+            if (detailsView == null) return;
+
+            if (!detailsView.IsLoaded)
+            {
+                RoutedEventHandler onLoaded = null;
+                onLoaded = (s, e) =>
+                {
+                    detailsView.Loaded -= onLoaded;
+                    HookFadeImageFromDetails(detailsView);
+                };
+                detailsView.Loaded += onLoaded;
+            }
+            else
+            {
+                HookFadeImageFromDetails(detailsView);
+            }
+        }
+
+
+        private void HookFadeImageFromDetails(FrameworkElement detailsView)
+        {
+            var ctrl = detailsView as Control;
+            if (ctrl != null)
+            {
+                ctrl.ApplyTemplate();
+
+                var fadeImage = ctrl.Template?.FindName("PART_ImageBackground", ctrl) as FrameworkElement;
+                if (fadeImage == null)
+                {
+                    fadeImage = FindChildByName(ctrl, "PART_ImageBackground") as FrameworkElement;
+                }
+
+                if (fadeImage != null)
+                {
+                    ApplyCustomAnimations(fadeImage);
+                    return;
+                }
+            }
+
+            var fadeImageByTree = FindChildByName(detailsView, "PART_ImageBackground") as FrameworkElement;
+            if (fadeImageByTree != null)
+            {
+                ApplyCustomAnimations(fadeImageByTree);
+            }
+        }
+
+
+        private void ApplyCustomAnimations(FrameworkElement fadeImage)
+        {
+            try
+            {
+                lastFadeImage = fadeImage;
+
+                ApplySourceUpdateDelay(fadeImage, settings.Settings.SourceUpdateDelay);
+
+                var type = fadeImage.GetType();
+
+                var img1Field = type.GetField("Image1", BindingFlags.Instance | BindingFlags.NonPublic);
+                var img2Field = type.GetField("Image2", BindingFlags.Instance | BindingFlags.NonPublic);
+                var borderDarkenField = type.GetField("BorderDarken", BindingFlags.Instance | BindingFlags.NonPublic);
+                var imageHolderField = type.GetField("ImageHolder", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                var img1 = img1Field != null ? img1Field.GetValue(fadeImage) as Image : null;
+                var img2 = img2Field != null ? img2Field.GetValue(fadeImage) as Image : null;
+                var borderDarken = borderDarkenField != null ? borderDarkenField.GetValue(fadeImage) as Border : null;
+                var imageHolder = imageHolderField != null ? imageHolderField.GetValue(fadeImage) as Grid : null;
+
+                if (img1 == null || img2 == null)
+                {
+                    return;
+                }
+
+                EnsureTransforms(img1);
+                EnsureTransforms(img2);
+
+                var img1FadeInField = type.GetField("Image1FadeIn", BindingFlags.Instance | BindingFlags.NonPublic);
+                var img2FadeInField = type.GetField("Image2FadeIn", BindingFlags.Instance | BindingFlags.NonPublic);
+                var img1FadeOutField = type.GetField("Image1FadeOut", BindingFlags.Instance | BindingFlags.NonPublic);
+                var img2FadeOutField = type.GetField("Image2FadeOut", BindingFlags.Instance | BindingFlags.NonPublic);
+                var borderDarkenFadeOutField = type.GetField("BorderDarkenFadeOut", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                var animType = settings.Settings.SelectedAnim ?? "Default";
+                if (!inAnimations.ContainsKey(animType) || !outAnimations.ContainsKey(animType))
+                {
+                    animType = "Default";
+                }
+
+                AnimationParams p;
+                if (!settings.Settings.AnimParams.TryGetValue(animType, out p) || p == null)
+                {
+                    p = settings.GetDefaultParamsFor(animType);
+                    settings.Settings.AnimParams[animType] = p;
+                }
+
+                var in1 = inAnimations[animType](img1, borderDarken, imageHolder, p);
+                var in2 = inAnimations[animType](img2, borderDarken, imageHolder, p);
+                var out1 = outAnimations[animType](img1, borderDarken, imageHolder, p);
+                var out2 = outAnimations[animType](img2, borderDarken, imageHolder, p);
+                var borderOut = CreateBorderDarkenOut(borderDarken);
+
+                if (img1FadeInField != null) img1FadeInField.SetValue(fadeImage, in1);
+                if (img2FadeInField != null) img2FadeInField.SetValue(fadeImage, in2);
+                if (img1FadeOutField != null) img1FadeOutField.SetValue(fadeImage, out1);
+                if (img2FadeOutField != null) img2FadeOutField.SetValue(fadeImage, out2);
+                if (borderDarkenFadeOutField != null && borderOut != null) borderDarkenFadeOutField.SetValue(fadeImage, borderOut);
+            }
+            catch
+            {
+               
+            }
+        }
+
+        // ---------------------- Animace (implementace) ----------------------
+
+
+        private Storyboard CreateBorderDarkenOut(Border borderDarken)
+        {
+            if (borderDarken == null) return null;
+            var sb = new Storyboard();
+            var fade = new DoubleAnimation
+            {
+                From = 1.0,
+                To = 0.0,
+                Duration = TimeSpan.FromSeconds(0.5),
+                FillBehavior = FillBehavior.Stop
+            };
+            Storyboard.SetTarget(fade, borderDarken);
+            Storyboard.SetTargetProperty(fade, new PropertyPath("Opacity"));
+            sb.Children.Add(fade);
+            return sb;
+        }
+
+        private void EnsureTransforms(Image img)
+        {
+            var group = img.RenderTransform as TransformGroup;
+            if (group == null)
+            {
+                group = new TransformGroup();
+                group.Children.Add(new ScaleTransform(1.0, 1.0));         
+                group.Children.Add(new TranslateTransform(0, 0));         
+                group.Children.Add(new RotateTransform(0.0));             
+                group.Children.Add(new SkewTransform(0.0, 0.0));          
+                img.RenderTransform = group;
+                img.RenderTransformOrigin = new Point(0.5, 0.5);
+            }
+            else
+            {
+                bool hasScale = false, hasTranslate = false, hasRotate = false, hasSkew = false;
+                foreach (var t in group.Children)
+                {
+                    if (t is ScaleTransform) hasScale = true;
+                    if (t is TranslateTransform) hasTranslate = true;
+                    if (t is RotateTransform) hasRotate = true;
+                    if (t is SkewTransform) hasSkew = true;
+                }
+                if (!hasScale) group.Children.Insert(0, new ScaleTransform(1.0, 1.0));
+                if (!hasTranslate) group.Children.Insert(1, new TranslateTransform(0, 0));
+                if (!hasRotate) group.Children.Insert(2, new RotateTransform(0.0));
+                if (!hasSkew) group.Children.Insert(3, new SkewTransform(0.0, 0.0));
+                img.RenderTransformOrigin = new Point(0.5, 0.5);
+            }
+        }
+
+        // Default
+        private Storyboard SbDefaultIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = new Storyboard();
+            var fade = new DoubleAnimation(0.0, 1.0, TimeSpan.FromSeconds(p.Duration));
+            Storyboard.SetTarget(fade, target);
+            Storyboard.SetTargetProperty(fade, new PropertyPath("Opacity"));
+            sb.Children.Add(fade);
+            if (borderDarken != null) borderDarken.Opacity = 1.0;
+            return sb;
+        }
+
+        private Storyboard SbDefaultOut(Image target, AnimationParams p)
+        {
+            var sb = new Storyboard();
+            var fade = new DoubleAnimation(1.0, 0.0, TimeSpan.FromSeconds(p.Duration));
+            Storyboard.SetTarget(fade, target);
+            Storyboard.SetTargetProperty(fade, new PropertyPath("Opacity"));
+            sb.Children.Add(fade);
+            return sb;
+        }
+
+        // Custom Fade
+        private Storyboard SbFadeIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = new Storyboard();
+            var fade = new DoubleAnimation(0.0, 1.0, TimeSpan.FromSeconds(p.Duration));
+            Storyboard.SetTarget(fade, target);
+            Storyboard.SetTargetProperty(fade, new PropertyPath("Opacity"));
+            sb.Children.Add(fade);
+            if (borderDarken != null) borderDarken.Opacity = 1.0;
+            return sb;
+        }
+
+        private Storyboard SbFadeOut(Image target, AnimationParams p)
+        {
+            var sb = new Storyboard();
+            var fade = new DoubleAnimation(1.0, 0.0, TimeSpan.FromSeconds(p.Duration));
+            Storyboard.SetTarget(fade, target);
+            Storyboard.SetTargetProperty(fade, new PropertyPath("Opacity"));
+            sb.Children.Add(fade);
+            return sb;
+        }
+
+        // Fade + Zoom
+        private Storyboard SbFadeZoomIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = SbFadeIn(target, borderDarken, p);
+            var sx = new DoubleAnimation(p.ZoomStart, 1.0, TimeSpan.FromSeconds(p.Duration))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+            };
+            var sy = new DoubleAnimation(p.ZoomStart, 1.0, TimeSpan.FromSeconds(p.Duration))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+            };
+            Storyboard.SetTarget(sx, target);
+            Storyboard.SetTarget(sy, target);
+            Storyboard.SetTargetProperty(sx, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"));
+            Storyboard.SetTargetProperty(sy, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"));
+            sb.Children.Add(sx);
+            sb.Children.Add(sy);
+            return sb;
+        }
+
+        private Storyboard SbFadeZoomOut(Image target, AnimationParams p)
+        {
+            var sb = SbFadeOut(target, p);
+            // Lehký odzoom při fade-out; můžeš upravit logiku dle potřeby
+            var endZoom = p.ZoomStart > 1.0 ? Math.Max(1.0, p.ZoomStart - 0.06) : 1.02;
+            var dur = Math.Max(0.05, p.Duration - 0.1);
+
+            var sx = new DoubleAnimation(1.0, endZoom, TimeSpan.FromSeconds(dur))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
+            };
+            var sy = new DoubleAnimation(1.0, endZoom, TimeSpan.FromSeconds(dur))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn }
+            };
+            Storyboard.SetTarget(sx, target);
+            Storyboard.SetTarget(sy, target);
+            Storyboard.SetTargetProperty(sx, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"));
+            Storyboard.SetTargetProperty(sy, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"));
+            sb.Children.Add(sx);
+            sb.Children.Add(sy);
+            return sb;
+        }
+
+        // PS5 Slide
+        private Storyboard SbSlideIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = SbFadeIn(target, borderDarken, p);
+            var tx = new DoubleAnimation(p.SlideDistance, 0, TimeSpan.FromSeconds(p.SlideDuration))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            Storyboard.SetTarget(tx, target);
+            Storyboard.SetTargetProperty(tx, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)"));
+            sb.Children.Add(tx);
+            return sb;
+        }
+
+        private Storyboard SbSlideOut(Image target, AnimationParams p)
+        {
+            var sb = SbFadeOut(target, p);
+            var tx = new DoubleAnimation(0, -Math.Abs(p.SlideDistance) * 0.5, TimeSpan.FromSeconds(Math.Max(0.05, p.SlideDuration - 0.1)))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            Storyboard.SetTarget(tx, target);
+            Storyboard.SetTargetProperty(tx, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)"));
+            sb.Children.Add(tx);
+            return sb;
+        }
+
+        // Zoom Rotate
+        private Storyboard SbZoomRotateIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = SbFadeIn(target, borderDarken, p);
+
+            var sx = new DoubleAnimation(p.ZoomStart, 1.0, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+            var sy = new DoubleAnimation(p.ZoomStart, 1.0, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+            var rot = new DoubleAnimation(p.RotateAngle, 0.0, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+
+            Storyboard.SetTarget(sx, target);
+            Storyboard.SetTarget(sy, target);
+            Storyboard.SetTarget(rot, target);
+
+            Storyboard.SetTargetProperty(sx, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"));
+            Storyboard.SetTargetProperty(sy, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"));
+            Storyboard.SetTargetProperty(rot, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[2].(RotateTransform.Angle)"));
+
+            sb.Children.Add(sx);
+            sb.Children.Add(sy);
+            sb.Children.Add(rot);
+            return sb;
+        }
+
+        private Storyboard SbZoomRotateOut(Image target, AnimationParams p)
+        {
+            var sb = SbFadeOut(target, p);
+
+            var endZoom = p.ZoomStart > 1.0 ? Math.Max(1.0, p.ZoomStart - 0.06) : 1.02;
+            var sx = new DoubleAnimation(1.0, endZoom, TimeSpan.FromSeconds(Math.Max(0.05, p.Duration - 0.1)))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+            var sy = new DoubleAnimation(1.0, endZoom, TimeSpan.FromSeconds(Math.Max(0.05, p.Duration - 0.1)))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+            var rot = new DoubleAnimation(0.0, -Math.Sign(p.RotateAngle) * Math.Abs(p.RotateAngle) * 0.6, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+
+            Storyboard.SetTarget(sx, target);
+            Storyboard.SetTarget(sy, target);
+            Storyboard.SetTarget(rot, target);
+
+            Storyboard.SetTargetProperty(sx, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"));
+            Storyboard.SetTargetProperty(sy, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"));
+            Storyboard.SetTargetProperty(rot, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[2].(RotateTransform.Angle)"));
+
+            sb.Children.Add(sx);
+            sb.Children.Add(sy);
+            sb.Children.Add(rot);
+            return sb;
+        }
+
+        // Curl
+        private Storyboard SbPageCurlIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = SbFadeIn(target, borderDarken, p);
+
+            var skewIn = new DoubleAnimation(-p.SkewAngle, 0.0, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+
+            Storyboard.SetTarget(skewIn, target);
+            Storyboard.SetTargetProperty(skewIn, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[3].(SkewTransform.AngleX)"));
+            sb.Children.Add(skewIn);
+
+            return sb;
+        }
+
+        private Storyboard SbPageCurlOut(Image target, AnimationParams p)
+        {
+            var sb = SbFadeOut(target, p);
+
+            var skewOut = new DoubleAnimation(0.0, p.SkewAngle, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+
+            Storyboard.SetTarget(skewOut, target);
+            Storyboard.SetTargetProperty(skewOut, new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[3].(SkewTransform.AngleX)"));
+            sb.Children.Add(skewOut);
+
+            return sb;
+        }
+
+        // Blur Fade
+        private Storyboard SbBlurFadeIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = SbFadeIn(target, borderDarken, p);
+
+            EnsureBlurEffect(target);
+            var blurIn = new DoubleAnimation(p.BlurRadius, 0.0, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+
+            Storyboard.SetTarget(blurIn, target);
+            Storyboard.SetTargetProperty(blurIn, new PropertyPath("(UIElement.Effect).(BlurEffect.Radius)"));
+            sb.Children.Add(blurIn);
+
+            return sb;
+        }
+
+        private Storyboard SbBlurFadeOut(Image target, AnimationParams p)
+        {
+            var sb = SbFadeOut(target, p);
+
+            EnsureBlurEffect(target);
+            var blurOut = new DoubleAnimation(0.0, p.BlurRadius, TimeSpan.FromSeconds(p.Duration))
+            { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+
+            Storyboard.SetTarget(blurOut, target);
+            Storyboard.SetTargetProperty(blurOut, new PropertyPath("(UIElement.Effect).(BlurEffect.Radius)"));
+            sb.Children.Add(blurOut);
+
+            return sb;
+        }
+
+        // Custom Slide
+        private Storyboard SbCustomSlideIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            var sb = SbFadeIn(target, borderDarken, p);
+
+            PropertyPath path;
+            double from, to = 0;
+
+            switch (p.SlideDirection)
+            {
+                case SlideDirection.FromLeft:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                    from = -Math.Abs(p.SlideDistance);
+                    break;
+                case SlideDirection.FromRight:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                    from = Math.Abs(p.SlideDistance);
+                    break;
+                case SlideDirection.FromTop:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.Y)");
+                    from = -Math.Abs(p.SlideDistance);
+                    break;
+                case SlideDirection.FromBottom:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.Y)");
+                    from = Math.Abs(p.SlideDistance);
+                    break;
+                default:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                    from = Math.Abs(p.SlideDistance);
+                    break;
+            }
+
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromSeconds(p.SlideDuration))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            Storyboard.SetTarget(anim, target);
+            Storyboard.SetTargetProperty(anim, path);
+            sb.Children.Add(anim);
+
+            return sb;
+        }
+
+        private Storyboard SbCustomSlideOut(Image target, AnimationParams p)
+        {
+            var sb = SbFadeOut(target, p);
+
+            PropertyPath path;
+            double from = 0, to;
+
+            switch (p.SlideDirection)
+            {
+                case SlideDirection.FromLeft:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                    to = Math.Abs(p.SlideDistance) * 0.5;
+                    break;
+                case SlideDirection.FromRight:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                    to = -Math.Abs(p.SlideDistance) * 0.5;
+                    break;
+                case SlideDirection.FromTop:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.Y)");
+                    to = Math.Abs(p.SlideDistance) * 0.5;
+                    break;
+                case SlideDirection.FromBottom:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.Y)");
+                    to = -Math.Abs(p.SlideDistance) * 0.5;
+                    break;
+                default:
+                    path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                    to = -Math.Abs(p.SlideDistance) * 0.5;
+                    break;
+            }
+
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromSeconds(Math.Max(0.05, p.SlideDuration - 0.1)))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            Storyboard.SetTarget(anim, target);
+            Storyboard.SetTargetProperty(anim, path);
+            sb.Children.Add(anim);
+
+            return sb;
+        }
+
+
+        // ---------------------- Pomocné metody ----------------------
+
+        private static FrameworkElement FindChildByName(DependencyObject parent, string name)
+        {
+            if (parent == null) return null;
+            int count = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                var fe = child as FrameworkElement;
+                if (fe != null && fe.Name == name) return fe;
+                var result = FindChildByName(child, name);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        private static DependencyObject FindFirstOfTypeName(DependencyObject parent, string fullTypeName)
+        {
+            if (parent == null) return null;
+            int count = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child.GetType().FullName == fullTypeName) return child;
+                var deeper = FindFirstOfTypeName(child, fullTypeName);
+                if (deeper != null) return deeper;
+            }
+            return null;
+        }
+
+        private DependencyObject FindVisualChildByTypeName(DependencyObject parent, string typeName)
+        {
+            if (parent == null) return null;
+            var count = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child.GetType().FullName == typeName)
+                {
+                    return child;
+                }
+
+                var deeper = FindVisualChildByTypeName(child, typeName);
+                if (deeper != null) return deeper;
+            }
+            return null;
+        }
+
+        private void EnsureBlurEffect(Image img)
+        {
+            if (img.Effect is BlurEffect) return;
+            img.Effect = new BlurEffect { Radius = 0.0, RenderingBias = RenderingBias.Performance };
+        }
+
+        private void ApplySourceUpdateDelay(FrameworkElement fadeImage, double delayMs)
+        {
+            try
+            {
+                var type = fadeImage.GetType();
+                var prop = type.GetProperty("SourceUpdateDelay", BindingFlags.Instance | BindingFlags.Public);
+                if (prop != null && prop.CanWrite)
+                {
+                    prop.SetValue(fadeImage, delayMs);
+                }
+                else
+                {
+                    logger.Warn("[CustomFadeAnim] SourceUpdateDelay property not found or not writable on FadeImage.");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Error(ex, "[CustomFadeAnim] Failed to set SourceUpdateDelay.");
+            }
+        }
+
+
+        // ---------------------- Settings UI ----------------------
+
+        public override ISettings GetSettings(bool firstRunSettings) => settings;
+        public override UserControl GetSettingsView(bool firstRunSettings) => new CustomFadeAnimSettingsView { DataContext = settings };
+    }
+}

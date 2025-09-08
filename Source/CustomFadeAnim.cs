@@ -20,6 +20,8 @@ namespace CustomFadeAnim
         private static readonly ILogger logger = LogManager.GetLogger();
         private FrameworkElement lastFadeImage;
 
+        private readonly HashSet<Control> hookedDesktopViews = new HashSet<Control>();
+
         // Registr animací (název -> továrna storyboardu)
         private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> inAnimations;
         private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> outAnimations;
@@ -57,7 +59,8 @@ namespace CustomFadeAnim
             Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 TryHookWithRetries();
-                TryHookDesktopMode();
+                TryHookDesktopModeOnce();
+                StartDesktopModeWatcher();
             }, DispatcherPriority.Background);
         }
 
@@ -175,61 +178,117 @@ namespace CustomFadeAnim
         }
 
         // ---------------------- Hook do Desktop UI ----------------------
-        private void TryHookDesktopMode()
+        private void StartDesktopModeWatcher()
         {
             var mainWindow = Application.Current?.MainWindow;
             if (mainWindow == null) return;
 
-            var detailsView = FindVisualChildByTypeName(mainWindow, "Playnite.DesktopApp.Controls.DetailsViewGameOverview")
-                              as FrameworkElement;
-            if (detailsView == null)
-            {
-                detailsView = FindVisualChildByTypeName(mainWindow, "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview")
-                              as FrameworkElement;
-            }
-            if (detailsView == null) return;
+            // První pokus hned po startu (když už něco existuje)
+            TryHookDesktopModeOnce();
 
-            if (!detailsView.IsLoaded)
+            // Průběžné sledování – reaguje na nové instance při přepínání Grid/Details
+            mainWindow.LayoutUpdated += MainWindow_LayoutUpdated;
+        }
+
+        private void MainWindow_LayoutUpdated(object sender, EventArgs e)
+        {
+            var mainWindow = Application.Current?.MainWindow;
+            if (mainWindow == null) return;
+
+            // Typy, které chceme pokrýt
+            HookIfNew(mainWindow, "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview");
+            HookIfNew(mainWindow, "Playnite.DesktopApp.Controls.Views.GridViewGameOverview");
+            HookIfNew(mainWindow, "Playnite.DesktopApp.Controls.Views.Library");
+        }
+
+        private void HookIfNew(DependencyObject root, string typeName)
+        {
+            var view = FindVisualChildByTypeName(root, typeName) as Control;
+            if (view == null) return;
+
+            if (hookedDesktopViews.Contains(view))
+            {
+                return; // už je hooknuté
+            }
+
+            hookedDesktopViews.Add(view);
+
+            if (view.IsLoaded)
+            {
+                HookFadeImageFromTemplate(view);
+            }
+            else
             {
                 RoutedEventHandler onLoaded = null;
                 onLoaded = (s, e) =>
                 {
-                    detailsView.Loaded -= onLoaded;
-                    HookFadeImageFromDetails(detailsView);
+                    view.Loaded -= onLoaded;
+                    HookFadeImageFromTemplate(view);
                 };
-                detailsView.Loaded += onLoaded;
-            }
-            else
-            {
-                HookFadeImageFromDetails(detailsView);
+                view.Loaded += onLoaded;
             }
         }
 
-
-        private void HookFadeImageFromDetails(FrameworkElement detailsView)
+        private void TryHookDesktopModeOnce()
         {
-            var ctrl = detailsView as Control;
-            if (ctrl != null)
-            {
-                ctrl.ApplyTemplate();
+            var mainWindow = Application.Current?.MainWindow;
+            if (mainWindow == null) return;
 
-                var fadeImage = ctrl.Template?.FindName("PART_ImageBackground", ctrl) as FrameworkElement;
+            var typeNames = new[]
+            {
+        "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview",
+        "Playnite.DesktopApp.Controls.Views.GridViewGameOverview",
+        "Playnite.DesktopApp.Controls.Views.Library"
+    };
+
+            foreach (var typeName in typeNames)
+            {
+                var view = FindVisualChildByTypeName(mainWindow, typeName) as Control;
+                if (view == null) continue;
+
+                if (!hookedDesktopViews.Contains(view))
+                {
+                    hookedDesktopViews.Add(view);
+                }
+
+                if (view.IsLoaded)
+                {
+                    HookFadeImageFromTemplate(view);
+                }
+                else
+                {
+                    RoutedEventHandler onLoaded = null;
+                    onLoaded = (s, e) =>
+                    {
+                        view.Loaded -= onLoaded;
+                        HookFadeImageFromTemplate(view);
+                    };
+                    view.Loaded += onLoaded;
+                }
+            }
+        }
+
+        private void HookFadeImageFromTemplate(Control view)
+        {
+            try
+            {
+                view.ApplyTemplate();
+
+                var fadeImage = view.Template?.FindName("PART_ImageBackground", view) as FrameworkElement;
+
                 if (fadeImage == null)
                 {
-                    fadeImage = FindChildByName(ctrl, "PART_ImageBackground") as FrameworkElement;
+                    fadeImage = FindChildByName(view, "PART_ImageBackground") as FrameworkElement;
                 }
 
                 if (fadeImage != null)
                 {
                     ApplyCustomAnimations(fadeImage);
-                    return;
                 }
             }
-
-            var fadeImageByTree = FindChildByName(detailsView, "PART_ImageBackground") as FrameworkElement;
-            if (fadeImageByTree != null)
+            catch
             {
-                ApplyCustomAnimations(fadeImageByTree);
+               
             }
         }
 

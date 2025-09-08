@@ -18,3 +18,10 @@ Packages:
     PackageUrl: https://github.com/saVantCZ/CustomFadeAnim/releases/download/1.0.2/CustomFadeAnim_155b27bc-6c8c-47dc-ae41-e74568b2fe9f_1_0_2.pext
     Changelog:
       - 'Added "Smart Slide" which reacts on scrolling direction in game list (Fullscreen Themes only)'
+  - Version: 1.0.3
+    RequiredApiVersion: 6.12.0
+    ReleaseDate: 2025-09-09
+    PackageUrl: https://github.com/saVantCZ/CustomFadeAnim/releases/download/1.0.3/CustomFadeAnim_155b27bc-6c8c-47dc-ae41-e74568b2fe9f_1_0_3.pext
+    Changelog:
+      - 'Added fallback for themes with no PART_ImageBackround (for example Solaris Theme) to fill any <FadeImage element with custom animation'
+      - 'Added brief description for every animation effect'

@@ -7,6 +7,8 @@ using System.Linq;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
@@ -19,10 +21,15 @@ namespace CustomFadeAnim
         private CustomFadeAnimSettingsViewModel settings;
         private static readonly ILogger logger = LogManager.GetLogger();
         private FrameworkElement lastFadeImage;
+        private SlideDirection lastNavDirection = SlideDirection.FromRight;
+        private SlideDirection lockedSlideDirection = SlideDirection.FromRight;
 
         private readonly HashSet<Control> hookedDesktopViews = new HashSet<Control>();
+        private readonly HashSet<Window> hookedFsWindows = new HashSet<Window>();
+        private readonly HashSet<ListBox> hookedFsLists = new HashSet<ListBox>();
+        private readonly HashSet<FrameworkElement> fsFadeImages = new HashSet<FrameworkElement>();
+        private readonly HashSet<ContentControl> watchedBgChangers = new HashSet<ContentControl>();
 
-        // Registr animací (název -> továrna storyboardu)
         private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> inAnimations;
         private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> outAnimations;
 
@@ -50,6 +57,72 @@ namespace CustomFadeAnim
             }
         }
 
+        private void ListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (settings == null || settings.Settings == null)
+                return;
+
+            if (settings.Settings.SelectedAnim != AnimationNames.SmartSlide)
+                return;
+
+            if (fsFadeImages.Count > 0)
+            {
+                foreach (var fi in fsFadeImages)
+                {
+                    ApplyCustomAnimations(fi);
+                }
+            }
+            else if (lastFadeImage != null)
+            {
+                ApplyCustomAnimations(lastFadeImage);
+            }
+        }
+
+        private void HookFsInputAndSelection(Window win)
+        {
+            if (win == null) return;
+
+            if (!hookedFsWindows.Contains(win))
+            {
+                win.PreviewKeyDown += MainWindow_PreviewKeyDown;
+                hookedFsWindows.Add(win);
+            }
+
+            var list = FindChildByName(win, "PART_ListGameItems") as ListBox;
+            if (list != null && !hookedFsLists.Contains(list))
+            {
+                list.SelectionChanged += ListBox_SelectionChanged;
+                hookedFsLists.Add(list);
+
+                if (lastFadeImage == null)
+                {
+                    var fadeImage = FindVisualChildren<FrameworkElement>(win)
+                        .FirstOrDefault(fe => IsFadeImageType(fe.GetType()));
+                    if (fadeImage != null)
+                        lastFadeImage = fadeImage;
+                }
+            }
+        }
+
+        private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            switch (e.Key)
+            {
+                case Key.Left:
+                    lastNavDirection = SlideDirection.FromLeft;
+                    break;
+                case Key.Right:
+                    lastNavDirection = SlideDirection.FromRight;
+                    break;
+                case Key.Up:
+                    lastNavDirection = SlideDirection.FromTop;
+                    break;
+                case Key.Down:
+                    lastNavDirection = SlideDirection.FromBottom;
+                    break;
+            }
+        }
+
         public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
         {
             InitAnimations();
@@ -61,7 +134,40 @@ namespace CustomFadeAnim
                 TryHookWithRetries();
                 TryHookDesktopModeOnce();
                 StartDesktopModeWatcher();
+
+                var mw = Application.Current?.MainWindow;
+                if (mw != null)
+                {
+                    mw.PreviewKeyDown += MainWindow_PreviewKeyDown;
+                }
+
             }, DispatcherPriority.Background);
+        }
+
+        public override void OnApplicationStopped(OnApplicationStoppedEventArgs args)
+        {
+            var mw = Application.Current?.MainWindow;
+            if (mw != null)
+            {
+                mw.PreviewKeyDown -= MainWindow_PreviewKeyDown;
+                mw.LayoutUpdated -= MainWindow_LayoutUpdated;
+            }
+
+            foreach (var w in hookedFsWindows.ToList())
+            {
+                if (w != null) w.PreviewKeyDown -= MainWindow_PreviewKeyDown;
+            }
+            hookedFsWindows.Clear();
+
+            foreach (var lb in hookedFsLists.ToList())
+            {
+                if (lb != null) lb.SelectionChanged -= ListBox_SelectionChanged;
+            }
+            hookedFsLists.Clear();
+
+            fsFadeImages.Clear();
+
+            UnwatchAllBackgroundChangers();
         }
 
         // ---------------------- Inicializace animací ----------------------
@@ -72,10 +178,11 @@ namespace CustomFadeAnim
             public const string CustomFade = "Custom Fade";
             public const string BlurFade = "Blur Fade";
             public const string FadeZoom = "Fade + Zoom";
-            public const string PS5Slide = "PS5 Slide";
+            public const string PS5Slide = "PS5 Simple Slide";
             public const string CustomSlide = "Custom Slide";
             public const string ZoomRotate = "Zoom + Rotate";
             public const string PageCurl = "Wave Curl";
+            public const string SmartSlide = "Smart Slide";
         }
 
 
@@ -88,6 +195,7 @@ namespace CustomFadeAnim
                 { AnimationNames.FadeZoom,      (img, border, holder, p) => SbFadeZoomIn(img, border, p) },
                 { AnimationNames.PS5Slide,      (img, border, holder, p) => SbSlideIn(img, border, p) },
                 { AnimationNames.CustomSlide,   (img, border, holder, p) => SbCustomSlideIn(img, border, p) },
+                { AnimationNames.SmartSlide,    (img, border, holder, p) => SbSmartSlideIn(img, border, p) },
                 { AnimationNames.ZoomRotate,    (img, border, holder, p) => SbZoomRotateIn(img, border, p) },
                 { AnimationNames.PageCurl,      (img, border, holder, p) => SbPageCurlIn(img, border, p) },
                 { AnimationNames.BlurFade,      (img, border, holder, p) => SbBlurFadeIn(img, border, p) },
@@ -100,6 +208,7 @@ namespace CustomFadeAnim
                 { AnimationNames.FadeZoom,      (img, border, holder, p) => SbFadeZoomOut(img, p) },
                 { AnimationNames.PS5Slide,      (img, border, holder, p) => SbSlideOut(img, p) },
                 { AnimationNames.CustomSlide,   (img, border, holder, p) => SbCustomSlideOut(img, p) },
+                { AnimationNames.SmartSlide,    (img, border, holder, p) => SbSmartSlideOut(img, p) },
                 { AnimationNames.ZoomRotate,    (img, border, holder, p) => SbZoomRotateOut(img, p) },
                 { AnimationNames.PageCurl,      (img, border, holder, p) => SbPageCurlOut(img, p) },
                 { AnimationNames.BlurFade,      (img, border, holder, p) => SbBlurFadeOut(img, p) },
@@ -135,6 +244,11 @@ namespace CustomFadeAnim
         {
             failReason = null;
 
+            if (fsFadeImages.Count > 0 && lastFadeImage != null)
+            {
+                return true;
+            }
+
             var win = Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsVisible);
             if (win == null)
             {
@@ -142,36 +256,53 @@ namespace CustomFadeAnim
                 return false;
             }
 
-            var fadeImage = FindChildByName(win, "PART_ImageBackground") as FrameworkElement;
-            if (fadeImage == null)
+            HookFsInputAndSelection(win);
+            TryHookBackgroundChanger(win);
+            List<FrameworkElement> fadeImages = new List<FrameworkElement>();
+
+            var part = FindChildByName(win, "PART_ImageBackground") as FrameworkElement;
+            if (part != null)
             {
-                // Fallback: libovolný FadeImage ve stromu.
-                var anyFade = FindFirstOfTypeName(win, "Playnite.Controls.FadeImage");
-                if (anyFade != null)
-                {
-                    fadeImage = anyFade as FrameworkElement;
-                }
+                fadeImages.Add(part);
+                logger.Info("[CustomFadeAnim] Found PART_ImageBackground (Universal hook).");
             }
 
-            if (fadeImage == null)
+            FindAllFadeImages(win, fadeImages);
+
+            fadeImages = fadeImages.Distinct().ToList();
+            logger.Info($"[CustomFadeAnim] Animating {fadeImages.Count} FadeImage element(s) (Universal hook).");
+
+            fsFadeImages.Clear();
+            foreach (var fi in fadeImages)
             {
-                failReason = "FadeImage not found.";
+                fsFadeImages.Add(fi);
+            }
+
+            if (fadeImages.Count == 0)
+            {
+                failReason = "No FadeImage found.";
                 return false;
             }
 
-            if (!fadeImage.IsLoaded)
+            // Fix Smart Slide… mrdka jedna
+            lastFadeImage = fadeImages[0];
+
+            foreach (var fi in fadeImages)
             {
-                RoutedEventHandler onLoaded = null;
-                onLoaded = (s, e) =>
+                if (!fi.IsLoaded)
                 {
-                    fadeImage.Loaded -= onLoaded;
-                    ApplyCustomAnimations(fadeImage);
-                };
-                fadeImage.Loaded += onLoaded;
-            }
-            else
-            {
-                ApplyCustomAnimations(fadeImage);
+                    RoutedEventHandler onLoaded = null;
+                    onLoaded = (s, e2) =>
+                    {
+                        fi.Loaded -= onLoaded;
+                        ApplyCustomAnimations(fi);
+                    };
+                    fi.Loaded += onLoaded;
+                }
+                else
+                {
+                    ApplyCustomAnimations(fi);
+                }
             }
 
             return true;
@@ -183,10 +314,10 @@ namespace CustomFadeAnim
             var mainWindow = Application.Current?.MainWindow;
             if (mainWindow == null) return;
 
-            // První pokus hned po startu (když už něco existuje)
             TryHookDesktopModeOnce();
+            TryHookBackgroundChanger(Application.Current.MainWindow);
 
-            // Průběžné sledování – reaguje na nové instance při přepínání Grid/Details
+            mainWindow.LayoutUpdated -= MainWindow_LayoutUpdated;
             mainWindow.LayoutUpdated += MainWindow_LayoutUpdated;
         }
 
@@ -195,10 +326,11 @@ namespace CustomFadeAnim
             var mainWindow = Application.Current?.MainWindow;
             if (mainWindow == null) return;
 
-            // Typy, které chceme pokrýt
             HookIfNew(mainWindow, "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview");
             HookIfNew(mainWindow, "Playnite.DesktopApp.Controls.Views.GridViewGameOverview");
             HookIfNew(mainWindow, "Playnite.DesktopApp.Controls.Views.Library");
+            TryHookBackgroundChanger(Application.Current.MainWindow);
+
         }
 
         private void HookIfNew(DependencyObject root, string typeName)
@@ -208,7 +340,7 @@ namespace CustomFadeAnim
 
             if (hookedDesktopViews.Contains(view))
             {
-                return; // už je hooknuté
+                return;
             }
 
             hookedDesktopViews.Add(view);
@@ -216,6 +348,8 @@ namespace CustomFadeAnim
             if (view.IsLoaded)
             {
                 HookFadeImageFromTemplate(view);
+                HookAllFadeImagesFromView(view);
+                TryHookBackgroundChanger(view);
             }
             else
             {
@@ -224,6 +358,8 @@ namespace CustomFadeAnim
                 {
                     view.Loaded -= onLoaded;
                     HookFadeImageFromTemplate(view);
+                    HookAllFadeImagesFromView(view);
+                    TryHookBackgroundChanger(view);
                 };
                 view.Loaded += onLoaded;
             }
@@ -236,10 +372,10 @@ namespace CustomFadeAnim
 
             var typeNames = new[]
             {
-        "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview",
-        "Playnite.DesktopApp.Controls.Views.GridViewGameOverview",
-        "Playnite.DesktopApp.Controls.Views.Library"
-    };
+                "Playnite.DesktopApp.Controls.Views.DetailsViewGameOverview",
+                "Playnite.DesktopApp.Controls.Views.GridViewGameOverview",
+                "Playnite.DesktopApp.Controls.Views.Library"
+            };
 
             foreach (var typeName in typeNames)
             {
@@ -254,6 +390,8 @@ namespace CustomFadeAnim
                 if (view.IsLoaded)
                 {
                     HookFadeImageFromTemplate(view);
+                    HookAllFadeImagesFromView(view);
+                    TryHookBackgroundChanger(view);
                 }
                 else
                 {
@@ -262,10 +400,14 @@ namespace CustomFadeAnim
                     {
                         view.Loaded -= onLoaded;
                         HookFadeImageFromTemplate(view);
+                        HookAllFadeImagesFromView(view);
+                        TryHookBackgroundChanger(view);
                     };
                     view.Loaded += onLoaded;
                 }
+
             }
+
         }
 
         private void HookFadeImageFromTemplate(Control view)
@@ -292,6 +434,221 @@ namespace CustomFadeAnim
             }
         }
 
+        private void HookAllFadeImagesFromView(Control view)
+        {
+            try
+            {
+                view.ApplyTemplate();
+
+                List<FrameworkElement> fadeImages = new List<FrameworkElement>();
+
+                var part = view.Template?.FindName("PART_ImageBackground", view) as FrameworkElement;
+                if (part != null)
+                {
+                    fadeImages.Add(part);
+                    logger.Info("[CustomFadeAnim] Found PART_ImageBackground (Desktop hook).");
+                }
+
+                FindAllFadeImages(view, fadeImages);
+                fadeImages = fadeImages.Distinct().ToList();
+
+                logger.Info($"[CustomFadeAnim] Animating {fadeImages.Count} FadeImage(s) (Desktop hook).");
+
+                var visibleFadeImages = fadeImages.Where(IsEffectivelyVisible).ToList();
+
+                if (visibleFadeImages.Count > 0)
+                {
+                    HookFadeImageWithLoadedCheck(visibleFadeImages[0]);
+                }
+                else
+                {
+                    // taky dobra mrdka, pitomej backgroundchanger
+                    var bgChanger = FindChildByName(view, "BackgroundChanger_PluginBackgroundImage") as ContentControl;
+                    if (bgChanger != null)
+                    {
+                        WatchBackgroundChanger(bgChanger); 
+                        HookBackgroundChangerContent(bgChanger.Content);
+                    }
+                }
+
+            }
+            catch (Exception ex)
+            {
+                logger.Error(ex, "[CustomFadeAnim] Failed to hook desktop fade images.");
+            }
+        }
+
+        // ---------------------- Pokus o Hook na BackgroundChanger, jen kdyz je FadeImage -------------------------
+
+        private void BackgroundChanger_ContentValueChanged(object sender, EventArgs e)
+        {
+            var cc = sender as ContentControl;
+            if (cc != null)
+            {
+                HookBackgroundChangerContent(cc.Content);
+            }
+        }
+
+        private void HookBackgroundChangerContent(object content)
+        {
+            var fe = content as FrameworkElement;
+            if (fe == null)
+                return;
+
+            // přímo FadeImage
+            if (IsFadeImageType(fe.GetType()))
+            {
+                logger.Info("[CustomFadeAnim] Hooking FadeImage from BackgroundChanger content.");
+                HookFadeImageWithLoadedCheck(fe);
+                return;
+            }
+
+            // PluginBackgroundImage - nedelej nic
+            if (fe.GetType().Name == "PluginBackgroundImage")
+            {
+                logger.Info("[CustomFadeAnim] Detected BackgroundChanger as ContentControl. No animation hook applied. Disable BackgroundChanger for this Theme.");
+                lastFadeImage = fe;
+                return;
+            }
+
+            // wrapper, jestli nekdo ma FadeImage uvnitr, kokotina to je
+            var nestedFade = FindVisualChildren<FrameworkElement>(fe)
+                .FirstOrDefault(c => IsFadeImageType(c.GetType()));
+            if (nestedFade != null)
+            {
+                logger.Info("[CustomFadeAnim] Hooking nested FadeImage inside BackgroundChanger content.");
+                HookFadeImageWithLoadedCheck(nestedFade);
+                return;
+            }
+
+            // kdyz nic, tak nasrat
+            logger.Info("[CustomFadeAnim] No FadeImage or PluginBackgroundImage found in BackgroundChanger content.");
+        }
+
+
+        private void WatchBackgroundChanger(ContentControl cc)
+        {
+            if (cc == null || watchedBgChangers.Contains(cc))
+                return;
+
+            var dpd = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(ContentControl.ContentProperty, typeof(ContentControl));
+            if (dpd != null)
+            {
+                dpd.RemoveValueChanged(cc, BackgroundChanger_ContentValueChanged);
+                dpd.AddValueChanged(cc, BackgroundChanger_ContentValueChanged);
+                watchedBgChangers.Add(cc);
+            }
+
+            HookBackgroundChangerContent(cc.Content);
+        }
+
+        private void UnwatchAllBackgroundChangers()
+        {
+            var dpd = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(ContentControl.ContentProperty, typeof(ContentControl));
+            if (dpd != null)
+            {
+                foreach (var cc in watchedBgChangers.ToList())
+                {
+                    dpd.RemoveValueChanged(cc, BackgroundChanger_ContentValueChanged);
+                }
+            }
+            watchedBgChangers.Clear();
+        }
+        private void TryHookBackgroundChanger(FrameworkElement root)
+        {
+            try
+            {
+                if (root == null) return;
+
+                var bc = FindChildByName(root, "BackgroundChanger_PluginBackgroundImage") as ContentControl;
+                if (bc == null)
+                {
+                    return;
+                }
+
+                root.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    HookBackgroundChangerBoundFadeImages(root, bc);
+                }), DispatcherPriority.Background);
+            }
+            catch (Exception ex)
+            {
+                logger.Error(ex, "[CustomFadeAnim] Failed to hook BackgroundChanger.");
+            }
+        }
+
+        private void HookBackgroundChangerBoundFadeImages(FrameworkElement root, ContentControl bc)
+        {
+            try
+            {
+                if (bc.Content is FrameworkElement contentFe && IsFadeImageType(contentFe.GetType()))
+                {
+                    HookFadeImageWithLoadedCheck(contentFe);
+                }
+
+                var allFadeImages = new List<FrameworkElement>();
+                FindAllFadeImages(root, allFadeImages);
+
+                foreach (var fi in allFadeImages)
+                {
+                    if (IsBoundToBackgroundChangerContentSource(fi, "BackgroundChanger_PluginBackgroundImage"))
+                    {
+                        HookFadeImageWithLoadedCheck(fi);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Error(ex, "[CustomFadeAnim] Failed during BackgroundChanger binding hook.");
+            }
+        }
+
+        private bool IsBoundToBackgroundChangerContentSource(FrameworkElement fadeImage, string elementName)
+        {
+            try
+            {
+                var dpField = fadeImage.GetType().GetField("SourceProperty",
+                    BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                if (dpField == null) return false;
+
+                var dp = dpField.GetValue(null) as DependencyProperty;
+                if (dp == null) return false;
+
+                var exprBase = BindingOperations.GetBindingExpressionBase(fadeImage, dp);
+                if (exprBase == null) return false;
+
+                //  Binding
+                var be = exprBase as BindingExpression;
+                if (be != null)
+                {
+                    var b = be.ParentBinding;
+                    return b != null && b.ElementName == elementName && b.Path != null && b.Path.Path == "Content.Source";
+                }
+
+                // PriorityBinding
+                var pbe = exprBase as PriorityBindingExpression;
+                if (pbe != null && pbe.ParentPriorityBinding != null)
+                {
+                    foreach (var b in pbe.ParentPriorityBinding.Bindings.OfType<Binding>())
+                    {
+                        if (b.ElementName == elementName && b.Path != null && b.Path.Path == "Content.Source")
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
+
+        // ---------------------- Animace (Hook do FadeImage.cs animace) ----------------------
 
         private void ApplyCustomAnimations(FrameworkElement fadeImage)
         {
@@ -300,6 +657,7 @@ namespace CustomFadeAnim
                 lastFadeImage = fadeImage;
 
                 ApplySourceUpdateDelay(fadeImage, settings.Settings.SourceUpdateDelay);
+
 
                 var type = fadeImage.GetType();
 
@@ -320,6 +678,15 @@ namespace CustomFadeAnim
 
                 EnsureTransforms(img1);
                 EnsureTransforms(img2);
+
+                if (settings.Settings.SelectedAnim == AnimationNames.SmartSlide)
+                {
+                    lockedSlideDirection = lastNavDirection;
+                }
+
+
+                ResetTranslate(img1);
+                ResetTranslate(img2);
 
                 var img1FadeInField = type.GetField("Image1FadeIn", BindingFlags.Instance | BindingFlags.NonPublic);
                 var img2FadeInField = type.GetField("Image2FadeIn", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -722,8 +1089,146 @@ namespace CustomFadeAnim
             return sb;
         }
 
+        // Smart Slide
+        private Storyboard SbSmartSlideIn(Image target, Border borderDarken, AnimationParams p)
+        {
+            ResetTranslate(target);
+
+            var dir = lockedSlideDirection;
+            var sb = SbFadeIn(target, borderDarken, p);
+
+            PropertyPath path;
+            double from, to = 0;
+
+            if (dir == SlideDirection.FromLeft || dir == SlideDirection.FromRight)
+            {
+                path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                from = (dir == SlideDirection.FromLeft ? -1 : 1) * Math.Abs(p.SlideDistance);
+            }
+            else
+            {
+                path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.Y)");
+                from = (dir == SlideDirection.FromTop ? -1 : 1) * Math.Abs(p.SlideDistance);
+            }
+
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromSeconds(p.SlideDuration))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                FillBehavior = FillBehavior.Stop
+            };
+            anim.Completed += (s, e) => ResetTranslate(target);
+
+            Storyboard.SetTarget(anim, target);
+            Storyboard.SetTargetProperty(anim, path);
+            sb.Children.Add(anim);
+
+            return sb;
+        }
+
+        private Storyboard SbSmartSlideOut(Image target, AnimationParams p)
+        {
+            ResetTranslate(target);
+
+            var dir = lockedSlideDirection;
+            var sb = SbFadeOut(target, p);
+
+            PropertyPath path;
+            double from = 0, to;
+
+            if (dir == SlideDirection.FromLeft || dir == SlideDirection.FromRight)
+            {
+                path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.X)");
+                to = (dir == SlideDirection.FromLeft ? 1 : -1) * Math.Abs(p.SlideDistance) * 0.5;
+            }
+            else
+            {
+                path = new PropertyPath("(UIElement.RenderTransform).(TransformGroup.Children)[1].(TranslateTransform.Y)");
+                to = (dir == SlideDirection.FromTop ? 1 : -1) * Math.Abs(p.SlideDistance) * 0.5;
+            }
+
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromSeconds(Math.Max(0.05, p.SlideDuration - 0.1)))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+                FillBehavior = FillBehavior.Stop
+            };
+            anim.Completed += (s, e) => ResetTranslate(target);
+
+            Storyboard.SetTarget(anim, target);
+            Storyboard.SetTargetProperty(anim, path);
+            sb.Children.Add(anim);
+
+            return sb;
+        }
+
 
         // ---------------------- Pomocné metody ----------------------
+
+        private IEnumerable<T> FindVisualChildren<T>(DependencyObject depObj) where T : DependencyObject
+        {
+            if (depObj == null) yield break;
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(depObj); i++)
+            {
+                var child = VisualTreeHelper.GetChild(depObj, i);
+                if (child is T t)
+                    yield return t;
+
+                foreach (var childOfChild in FindVisualChildren<T>(child))
+                    yield return childOfChild;
+            }
+        }
+        private static bool IsFadeImageType(Type t)
+        {
+            while (t != null)
+            {
+                if (t.Name == "FadeImage")
+                    return true;
+                t = t.BaseType;
+            }
+            return false;
+        }
+
+        private static bool IsEffectivelyVisible(FrameworkElement fe)
+        {
+            return fe != null && fe.IsVisible && fe.ActualWidth > 0 && fe.ActualHeight > 0;
+        }
+
+        private static void FindAllFadeImages(DependencyObject root, List<FrameworkElement> sink)
+        {
+            if (root == null)
+                return;
+
+            int count = VisualTreeHelper.GetChildrenCount(root);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+
+                if (child is FrameworkElement fe && IsFadeImageType(child.GetType()))
+                {
+                    sink.Add(fe);
+                }
+
+                FindAllFadeImages(child, sink);
+            }
+        }
+
+        private void HookFadeImageWithLoadedCheck(FrameworkElement fadeImage)
+        {
+            if (!fadeImage.IsLoaded)
+            {
+                RoutedEventHandler onLoaded = null;
+                onLoaded = (s, e) =>
+                {
+                    fadeImage.Loaded -= onLoaded;
+                    ApplyCustomAnimations(fadeImage);
+                };
+                fadeImage.Loaded += onLoaded;
+            }
+            else
+            {
+                ApplyCustomAnimations(fadeImage);
+            }
+        }
 
         private static FrameworkElement FindChildByName(DependencyObject parent, string name)
         {
@@ -739,21 +1244,6 @@ namespace CustomFadeAnim
             }
             return null;
         }
-
-        private static DependencyObject FindFirstOfTypeName(DependencyObject parent, string fullTypeName)
-        {
-            if (parent == null) return null;
-            int count = VisualTreeHelper.GetChildrenCount(parent);
-            for (int i = 0; i < count; i++)
-            {
-                var child = VisualTreeHelper.GetChild(parent, i);
-                if (child.GetType().FullName == fullTypeName) return child;
-                var deeper = FindFirstOfTypeName(child, fullTypeName);
-                if (deeper != null) return deeper;
-            }
-            return null;
-        }
-
         private DependencyObject FindVisualChildByTypeName(DependencyObject parent, string typeName)
         {
             if (parent == null) return null;
@@ -770,6 +1260,21 @@ namespace CustomFadeAnim
                 if (deeper != null) return deeper;
             }
             return null;
+        }
+
+        private void ResetTranslate(Image target)
+        {
+            if (target?.RenderTransform is TransformGroup group)
+            {
+                foreach (var t in group.Children)
+                {
+                    if (t is TranslateTransform tt)
+                    {
+                        tt.X = 0;
+                        tt.Y = 0;
+                    }
+                }
+            }
         }
 
         private void EnsureBlurEffect(Image img)

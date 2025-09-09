@@ -10,12 +10,17 @@ namespace CustomFadeAnim
 {
     public class CustomFadeAnimSettings : ObservableObject
     {
-        private string selectedAnim = "Default";
+        // ---------------------- Definice, klasika ----------------------
 
+        private string selectedAnim = "Default";
         public string SelectedAnim
         {
             get => selectedAnim;
-            set => SetValue(ref selectedAnim, value);
+            set
+            {
+                SetValue(ref selectedAnim, value);
+                OnPropertyChanged(nameof(SelectedAnimDescription));
+            }
         }
 
         private double sourceUpdateDelay = 300;
@@ -30,6 +35,35 @@ namespace CustomFadeAnim
 
         public Dictionary<string, AnimationParams> AnimParams { get; set; } = new Dictionary<string, AnimationParams>();
 
+        public string SelectedAnimDescription
+        {
+            get
+            {
+                switch (SelectedAnim)
+                {
+                    case AnimationNames.Default:
+                        return "No Custom Animation.";
+                    case AnimationNames.CustomFade:
+                        return "Smooth fade between images with adjustable duration.";
+                    case AnimationNames.BlurFade:
+                        return "Fade combined with a blur effect for a soft transition.";
+                    case AnimationNames.FadeZoom:
+                        return "Fade while zooming for a dynamic effect.";
+                    case AnimationNames.PS5Slide:
+                        return "Simple slide animation inspired by the PS5 UI.";
+                    case AnimationNames.CustomSlide:
+                        return "Customizable slide animation with adjustable direction.";
+                    case AnimationNames.ZoomRotate:
+                        return "Zoom combined with rotation for a more dramatic transition.";
+                    case AnimationNames.PageCurl:
+                        return "Wave-like curl animation, similar to turning a page.";
+                    case AnimationNames.SmartSlide:
+                        return "Slide direction changes dynamically based on navigation input.";
+                    default:
+                        return string.Empty;
+                }
+            }
+        }
     }
 
     [Flags]
@@ -53,6 +87,8 @@ namespace CustomFadeAnim
         BlurRadius = 64,
         SlideDirection = 128
     }
+
+    // ---------------------- Parametry ----------------------
 
     public class AnimationParams : ObservableObject
     {
@@ -116,6 +152,7 @@ namespace CustomFadeAnim
 
     }
 
+    // ---------------------- Nastaveni View Model Pluginu ----------------------
     public class CustomFadeAnimSettingsViewModel : ObservableObject, ISettings
     {
         private readonly CustomFadeAnim plugin;
@@ -165,6 +202,8 @@ namespace CustomFadeAnim
             }
         }
 
+        // ---------------------- Settings Edit metody ----------------------
+
         public void BeginEdit()
         {
             editingClone = Serialization.GetClone(Settings);
@@ -172,7 +211,12 @@ namespace CustomFadeAnim
 
         public void CancelEdit()
         {
-            Settings = editingClone;
+            var saved = plugin.LoadPluginSettings<CustomFadeAnimSettings>() ?? new CustomFadeAnimSettings();
+
+            Settings.SelectedAnim = saved.SelectedAnim;
+            Settings.SourceUpdateDelay = saved.SourceUpdateDelay;
+            Settings.AnimParams = saved.AnimParams;
+
             OnPropertyChanged(nameof(Settings));
             OnPropertyChanged(nameof(CurrentParams));
         }
@@ -224,6 +268,7 @@ namespace CustomFadeAnim
             OnPropertyChanged(nameof(CurrentParams));
         }
 
+        // ---------------------- Defaultni hodnoty jak pri nacteni, tak pro reset ----------------------
         public AnimationParams GetDefaultParamsFor(string name)
         {
             var key = name ?? string.Empty;
@@ -258,9 +303,9 @@ namespace CustomFadeAnim
             {
                 result = new AnimationParams
                 {
-                    Duration = 0.4,
+                    Duration = 0.3,
                     SlideDistance = 40.0,
-                    SlideDuration = 0.4,
+                    SlideDuration = 0.5,
                     UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration
                 };
             }
@@ -296,17 +341,28 @@ namespace CustomFadeAnim
             {
                 result = new AnimationParams
                 {
-                    Duration = 0.4,
+                    Duration = 0.3,
                     SlideDistance = 40,
-                    SlideDuration = 0.4,
+                    SlideDuration = 0.5,
                     SlideDirection = SlideDirection.FromRight,
                     UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration | AnimParamFlags.SlideDirection
+                };
+            }
+            else if (key == AnimationNames.SmartSlide)
+            {
+                result = new AnimationParams
+                {
+                    Duration = 0.3,
+                    SlideDistance = 40,
+                    SlideDuration = 0.5,
+                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration
                 };
             }
 
             return result ?? new AnimationParams { Duration = 0.6, UsedParams = AnimParamFlags.Duration };
         }
 
+        // ---------------------- Reset metoda ----------------------
         public void ResetCurrentToDefaults()
         {
             if (string.IsNullOrEmpty(Settings.SelectedAnim))
@@ -340,6 +396,7 @@ namespace CustomFadeAnim
             OnPropertyChanged(nameof(SlideDirectionVisibility));
         }
 
+        // ---------------------- Klapacka ----------------------
         private void ClampAll()
         {
             foreach (var kv in Settings.AnimParams)
@@ -362,10 +419,7 @@ namespace CustomFadeAnim
             return v;
         }
 
-        public static class SlideDirectionEnumValues
-        {
-            public static Array All => Enum.GetValues(typeof(SlideDirection));
-        }
+        // ---------------------- Visibility pro UI ----------------------
 
         public Visibility DurationVisibility
         {

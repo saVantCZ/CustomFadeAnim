@@ -25,3 +25,12 @@ Packages:
     Changelog:
       - 'Added fallback for themes with no PART_ImageBackround (for example Solaris Theme) to fill any <FadeImage element with custom animation'
       - 'Added brief description for every animation effect'
+  - Version: 1.0.5
+    RequiredApiVersion: 6.12.0
+    ReleaseDate: 2025-09-09
+    PackageUrl: https://github.com/saVantCZ/CustomFadeAnim/releases/download/1.0.5/CustomFadeAnim_155b27bc-6c8c-47dc-ae41-e74568b2fe9f_1_0_5.pext
+    Changelog:
+      - 'Hooked on BackgroundChanger animations (experimental, can cause failure if game has no image background set, can be heavy on resources)'
+      - 'Fixed settings view bugged when Settings Window is closed without any change (CancelEdit method)'
+      - 'Fixed Smart Slide detection apply for Fullscreen Themes (like Solaris) with Multiple unnamed FadeImages'
+      - 'You can suggest any other Animation Style (beside Shader based ones...) on my Github or Playnite Discord server :)'

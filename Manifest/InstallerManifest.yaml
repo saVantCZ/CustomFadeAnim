@@ -34,3 +34,12 @@ Packages:
       - 'Fixed settings view bugged when Settings Window is closed without any change (CancelEdit method)'
       - 'Fixed Smart Slide detection apply for Fullscreen Themes (like Solaris) with Multiple unnamed FadeImages'
       - 'You can suggest any other Animation Style (beside Shader based ones...) on my Github or Playnite Discord server :)'
+  - Version: 1.0.6
+    RequiredApiVersion: 6.12.0
+    ReleaseDate: 2025-09-09
+    PackageUrl: https://github.com/saVantCZ/CustomFadeAnim/releases/download/1.0.6/CustomFadeAnim_155b27bc-6c8c-47dc-ae41-e74568b2fe9f_1_0_6.pext
+    Changelog:
+      - 'Fixed Smart Slide animation for desktop mode (reacts to arrowkeys navigation)'
+      - 'Added logger, to inform you about BackgroundChanger incompatibility (Mostly themes which doesnt use BackgroundChanger Content.Source for existing FadeImage)'
+      - 'Plugin is compatible with BackgroundChanger only if its Content.Source is used as Source for any FadeImage'
+      - 'Code Clean up'

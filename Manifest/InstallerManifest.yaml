@@ -43,3 +43,12 @@ Packages:
       - 'Added logger, to inform you about BackgroundChanger incompatibility (Mostly themes which doesnt use BackgroundChanger Content.Source for existing FadeImage)'
       - 'Plugin is compatible with BackgroundChanger only if its Content.Source is used as Source for any FadeImage'
       - 'Code Clean up'
+  - Version: 1.0.7
+    RequiredApiVersion: 6.12.0
+    ReleaseDate: 2025-09-13
+    PackageUrl: https://github.com/saVantCZ/CustomFadeAnim/releases/download/1.0.7/CustomFadeAnim_155b27bc-6c8c-47dc-ae41-e74568b2fe9f_1_0_7.pext
+    Changelog:
+      - 'Fixed Smart Slide animation for desktop mode (again, more bulletproof)'
+      - 'Rewrite logic for Smart Slide - now uses FadeImage Source Changed as hint instead ListBox Selection Changed'
+      - 'Added CheckBox for all Slide Animations to enable Image Zoom-in to hide empty visible borders while sliding, Zoom-in level depends on Slide Distance'
+      - 'Code Clean up of unused methods due to rewrite'

@@ -2,6 +2,9 @@
 
 **Custom Fade Animations** is a Playnite plugin that replaces the default background transition with a selection of smooth, customizable animation effects. Whether you prefer subtle fades or dynamic slides, this plugin lets you tailor the experience to your liking.
 
+## If you like my work, a coffee would be awesome!
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/MtbivzU)
+
 ## ✨ Animation Styles
 
 Choose from a variety of transition effects:

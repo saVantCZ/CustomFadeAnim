@@ -26,9 +26,8 @@ namespace CustomFadeAnim
 
         private readonly HashSet<Control> hookedDesktopViews = new HashSet<Control>();
         private readonly HashSet<Window> hookedFsWindows = new HashSet<Window>();
-        private readonly HashSet<ListBox> hookedFsLists = new HashSet<ListBox>();
-        private readonly HashSet<FrameworkElement> fsFadeImages = new HashSet<FrameworkElement>();
         private readonly HashSet<ContentControl> watchedBgChangers = new HashSet<ContentControl>();
+        private readonly HashSet<FrameworkElement> watchedFadeImages = new HashSet<FrameworkElement>();
 
         private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> inAnimations;
         private Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>> outAnimations;
@@ -57,27 +56,6 @@ namespace CustomFadeAnim
             }
         }
 
-        private void ListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (settings == null || settings.Settings == null)
-                return;
-
-            if (settings.Settings.SelectedAnim != AnimationNames.SmartSlide)
-                return;
-
-            if (fsFadeImages.Count > 0)
-            {
-                foreach (var fi in fsFadeImages)
-                {
-                    ApplyCustomAnimations(fi);
-                }
-            }
-            else if (lastFadeImage != null)
-            {
-                ApplyCustomAnimations(lastFadeImage);
-            }
-        }
-
         private void HookFsInputAndSelection(Window win)
         {
             if (win == null) return;
@@ -87,20 +65,44 @@ namespace CustomFadeAnim
                 win.PreviewKeyDown += MainWindow_PreviewKeyDown;
                 hookedFsWindows.Add(win);
             }
+        }
 
-            var list = FindChildByName(win, "PART_ListGameItems") as ListBox;
-            if (list != null && !hookedFsLists.Contains(list))
+        private void WatchFadeImageSourceChanges(FrameworkElement fade)
+        {
+            if (fade == null || watchedFadeImages.Contains(fade))
+                return;
+
+            try
             {
-                list.SelectionChanged += ListBox_SelectionChanged;
-                hookedFsLists.Add(list);
+                var dpField = fade.GetType().GetField("SourceProperty",
+                    BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                if (dpField == null) return;
 
-                if (lastFadeImage == null)
+                var dp = dpField.GetValue(null) as DependencyProperty;
+                if (dp == null) return;
+
+                var dpd = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(dp, fade.GetType());
+                if (dpd == null) return;
+
+                dpd.AddValueChanged(fade, (s, e) =>
                 {
-                    var fadeImage = FindVisualChildren<FrameworkElement>(win)
-                        .FirstOrDefault(fe => IsFadeImageType(fe.GetType()));
-                    if (fadeImage != null)
-                        lastFadeImage = fadeImage;
-                }
+                    ApplyCustomAnimations(fade);
+                });
+
+                fade.Unloaded += (s, e) =>
+                {
+                    watchedFadeImages.Remove(fade);
+                    if (ReferenceEquals(lastFadeImage, fade))
+                    {
+                        lastFadeImage = null;
+                    }
+                };
+
+                watchedFadeImages.Add(fade);
+            }
+            catch
+            {
+                
             }
         }
 
@@ -159,14 +161,6 @@ namespace CustomFadeAnim
             }
             hookedFsWindows.Clear();
 
-            foreach (var lb in hookedFsLists.ToList())
-            {
-                if (lb != null) lb.SelectionChanged -= ListBox_SelectionChanged;
-            }
-            hookedFsLists.Clear();
-
-            fsFadeImages.Clear();
-
             UnwatchAllBackgroundChangers();
         }
 
@@ -199,6 +193,7 @@ namespace CustomFadeAnim
                 { AnimationNames.ZoomRotate,    (img, border, holder, p) => SbZoomRotateIn(img, border, p) },
                 { AnimationNames.PageCurl,      (img, border, holder, p) => SbPageCurlIn(img, border, p) },
                 { AnimationNames.BlurFade,      (img, border, holder, p) => SbBlurFadeIn(img, border, p) },
+
             };
 
             outAnimations = new Dictionary<string, Func<Image, Border, Grid, AnimationParams, Storyboard>>
@@ -244,11 +239,6 @@ namespace CustomFadeAnim
         {
             failReason = null;
 
-            if (fsFadeImages.Count > 0 && lastFadeImage != null)
-            {
-                return true;
-            }
-
             var win = Application.Current.Windows.Cast<Window>().FirstOrDefault(w => w.IsVisible);
             if (win == null)
             {
@@ -272,11 +262,6 @@ namespace CustomFadeAnim
             fadeImages = fadeImages.Distinct().ToList();
             logger.Info($"[CustomFadeAnim] Animating {fadeImages.Count} FadeImage element(s) (Universal hook).");
 
-            fsFadeImages.Clear();
-            foreach (var fi in fadeImages)
-            {
-                fsFadeImages.Add(fi);
-            }
 
             if (fadeImages.Count == 0)
             {
@@ -289,6 +274,9 @@ namespace CustomFadeAnim
 
             foreach (var fi in fadeImages)
             {
+                
+                WatchFadeImageSourceChanges(fi);
+
                 if (!fi.IsLoaded)
                 {
                     RoutedEventHandler onLoaded = null;
@@ -425,7 +413,7 @@ namespace CustomFadeAnim
 
                 if (fadeImage != null)
                 {
-                    ApplyCustomAnimations(fadeImage);
+                    HookFadeImageWithLoadedCheck(fadeImage);
                 }
             }
             catch
@@ -451,6 +439,11 @@ namespace CustomFadeAnim
 
                 FindAllFadeImages(view, fadeImages);
                 fadeImages = fadeImages.Distinct().ToList();
+
+                foreach (var fi in fadeImages)
+                {
+                    WatchFadeImageSourceChanges(fi);
+                }
 
                 logger.Info($"[CustomFadeAnim] Animating {fadeImages.Count} FadeImage(s) (Desktop hook).");
 
@@ -684,6 +677,17 @@ namespace CustomFadeAnim
                     lockedSlideDirection = lastNavDirection;
                 }
 
+                var slideType = settings.Settings.SelectedAnim;
+                if (slideType == AnimationNames.PS5Slide ||
+                    slideType == AnimationNames.CustomSlide ||
+                    slideType == AnimationNames.SmartSlide)
+                {
+                    if (settings.Settings.AnimParams.TryGetValue(slideType, out var ap) && ap != null && ap.EnableSlideZoom)
+                    {
+                        ApplyFixedSlideZoom(img1, ap.SlideDistance);
+                        ApplyFixedSlideZoom(img2, ap.SlideDistance);
+                    }
+                }
 
                 ResetTranslate(img1);
                 ResetTranslate(img2);
@@ -844,7 +848,6 @@ namespace CustomFadeAnim
         private Storyboard SbFadeZoomOut(Image target, AnimationParams p)
         {
             var sb = SbFadeOut(target, p);
-            // Lehký odzoom při fade-out; můžeš upravit logiku dle potřeby
             var endZoom = p.ZoomStart > 1.0 ? Math.Max(1.0, p.ZoomStart - 0.06) : 1.02;
             var dur = Math.Max(0.05, p.Duration - 0.1);
 
@@ -1160,6 +1163,8 @@ namespace CustomFadeAnim
             return sb;
         }
 
+        
+
 
         // ---------------------- Pomocné metody ----------------------
 
@@ -1214,6 +1219,11 @@ namespace CustomFadeAnim
 
         private void HookFadeImageWithLoadedCheck(FrameworkElement fadeImage)
         {
+            // Nastav aktuální cíl a připoj Source watcher
+            lastFadeImage = fadeImage;
+            WatchFadeImageSourceChanges(fadeImage);
+
+
             if (!fadeImage.IsLoaded)
             {
                 RoutedEventHandler onLoaded = null;
@@ -1274,6 +1284,39 @@ namespace CustomFadeAnim
                         tt.Y = 0;
                     }
                 }
+            }
+        }
+
+        private void ApplyFixedSlideZoom(Image target, double slideDistance)
+        {
+            if (target == null)
+                return;
+
+            void apply()
+            {
+                if (target.RenderTransform is TransformGroup group &&
+                    group.Children.OfType<ScaleTransform>().FirstOrDefault() is ScaleTransform st &&
+                    target.ActualWidth > 0 && target.ActualHeight > 0)
+                {
+                    double scaleFactor = (target.ActualWidth + 2 * slideDistance) / target.ActualWidth;
+                    st.ScaleX = scaleFactor;
+                    st.ScaleY = scaleFactor;
+                }
+            }
+
+            if (target.ActualWidth <= 0 || target.ActualHeight <= 0)
+            {
+                SizeChangedEventHandler once = null;
+                once = (s, e) =>
+                {
+                    target.SizeChanged -= once;
+                    apply();
+                };
+                target.SizeChanged += once;
+            }
+            else
+            {
+                apply();
             }
         }
 

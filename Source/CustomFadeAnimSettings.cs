@@ -85,7 +85,8 @@ namespace CustomFadeAnim
         RotateAngle = 16,
         SkewAngle = 32,
         BlurRadius = 64,
-        SlideDirection = 128
+        SlideDirection = 128,
+        EnableSlideZoom = 256
     }
 
     // ---------------------- Parametry ----------------------
@@ -150,6 +151,13 @@ namespace CustomFadeAnim
             set => SetValue(ref slideDirection, value);
         }
 
+        private bool enableSlideZoom = true;
+        public bool EnableSlideZoom
+        {
+            get => enableSlideZoom;
+            set => SetValue(ref enableSlideZoom, value);
+        }
+
     }
 
     // ---------------------- Nastaveni View Model Pluginu ----------------------
@@ -180,6 +188,7 @@ namespace CustomFadeAnim
                     OnPropertyChanged(nameof(SkewAngleVisibility));
                     OnPropertyChanged(nameof(BlurRadiusVisibility));
                     OnPropertyChanged(nameof(SlideDirectionVisibility));
+                    OnPropertyChanged(nameof(EnableSlideZoomVisibility));
                 }
             };
         }
@@ -306,7 +315,8 @@ namespace CustomFadeAnim
                     Duration = 0.3,
                     SlideDistance = 40.0,
                     SlideDuration = 0.5,
-                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration
+                    EnableSlideZoom = true,
+                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration | AnimParamFlags.EnableSlideZoom
                 };
             }
             else if (key == AnimationNames.ZoomRotate)
@@ -345,7 +355,8 @@ namespace CustomFadeAnim
                     SlideDistance = 40,
                     SlideDuration = 0.5,
                     SlideDirection = SlideDirection.FromRight,
-                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration | AnimParamFlags.SlideDirection
+                    EnableSlideZoom = true,
+                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration | AnimParamFlags.SlideDirection | AnimParamFlags.EnableSlideZoom
                 };
             }
             else if (key == AnimationNames.SmartSlide)
@@ -355,7 +366,8 @@ namespace CustomFadeAnim
                     Duration = 0.3,
                     SlideDistance = 40,
                     SlideDuration = 0.5,
-                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration
+                    EnableSlideZoom = true,
+                    UsedParams = AnimParamFlags.Duration | AnimParamFlags.SlideDistance | AnimParamFlags.SlideDuration | AnimParamFlags.EnableSlideZoom
                 };
             }
 
@@ -394,6 +406,7 @@ namespace CustomFadeAnim
             OnPropertyChanged(nameof(SkewAngleVisibility));
             OnPropertyChanged(nameof(BlurRadiusVisibility));
             OnPropertyChanged(nameof(SlideDirectionVisibility));
+            OnPropertyChanged(nameof(EnableSlideZoomVisibility));
         }
 
         // ---------------------- Klapacka ----------------------
@@ -501,6 +514,16 @@ namespace CustomFadeAnim
             {
                 var p = CurrentParams;
                 return (p != null && p.UsedParams.HasFlag(AnimParamFlags.SlideDirection))
+                    ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        public Visibility EnableSlideZoomVisibility
+        {
+            get
+            {
+                var p = CurrentParams;
+                return (p != null && p.UsedParams.HasFlag(AnimParamFlags.EnableSlideZoom))
                     ? Visibility.Visible : Visibility.Collapsed;
             }
         }
